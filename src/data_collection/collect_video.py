@@ -23,7 +23,7 @@ import cv2
 # ---------------------------------------------------------------------------
 # Import project-wide constants from config.py (located at project root)
 # ---------------------------------------------------------------------------
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from config import (
     CAMERA_INDEX,
     CAMERA_FPS,

@@ -27,7 +27,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Import project-wide constants from config.py
 # ---------------------------------------------------------------------------
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from config import (
     DATASET_DIR,
     TRAIN_DIR,

@@ -29,11 +29,9 @@ env/
 Thumbs.db
 desktop.ini
 
-# --- Dataset (too large for git) ---
-dataset/raw_eyes/
-dataset/train/
-dataset/test/
-data/raw_videos/
+# --- Data & Dataset (too large for git) ---
+data/
+dataset/
 
 # --- Trained Models (large binary files) ---
 models/*.pkl
