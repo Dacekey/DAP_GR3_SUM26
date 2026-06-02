@@ -1,21 +1,22 @@
 """
-extract_eyes.py – Extract eye patches from recorded videos using dlib.
+extract_eyes.py – Extract eye patches from recorded videos using MediaPipe Face Mesh.
 
 Usage:
-    python data/extract_eyes.py               # Normal mode (no preview)
-    python data/extract_eyes.py --preview      # Show real-time preview of detections
+    python src/data_collection/extract_eyes.py --input raw_videos --output extracted_eyes --detector mediapipe
+    python src/data_collection/extract_eyes.py --preview
 
 Pipeline (per frame):
-    1. Detect face with dlib frontal face detector
-    2. Locate 68 facial landmarks
-    3. Compute eye alignment angle from corner landmarks (p1, p4)
-    4. Rotate & crop eye region so the eye is always horizontal
-    5. Resize each crop to 24x24 grayscale
-    6. Compute EAR and save alongside the patch
-
-Output:
-    dataset/raw_eyes/eye_000001.png, eye_000002.png, …
-    dataset/raw_eyes/ear_values.csv   (index, filename, ear, eye_side)
+    1. Detect face and landmarks with MediaPipe Face Mesh
+    2. Compute EAR using:
+       LEFT_EYE_EAR_IDX = [33, 160, 158, 133, 153, 144]
+       RIGHT_EYE_EAR_IDX = [362, 385, 387, 263, 373, 380]
+    3. Crop eyes using:
+       LEFT_EYE_CROP_IDX = [33, 133, 160, 158, 159, 144, 153, 145, 246, 161, 163, 7, 173, 157, 154, 155]
+       RIGHT_EYE_CROP_IDX = [362, 263, 385, 387, 386, 373, 380, 374, 466, 388, 390, 249, 398, 384, 381, 382]
+    4. Compute eye alignment angle from corner landmarks and rotate frame
+    5. Crop eye bounding box with padding, clamp within image dimensions
+    6. Convert each crop to grayscale and resize to 24x24
+    7. Save eye images and write metadata CSV.
 """
 
 import os
@@ -23,36 +24,40 @@ import sys
 import csv
 import math
 import argparse
-
-import cv2
 import numpy as np
+import cv2
 
 # ---------------------------------------------------------------------------
-# Import project-wide constants from config.py
+# Import project-wide constants from config.py 
 # ---------------------------------------------------------------------------
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from config import (
     VIDEO_DIR,
     DATASET_DIR,
-    LANDMARK_MODEL_PATH,
-    LEFT_EYE_INDICES,
-    RIGHT_EYE_INDICES,
     EYE_PATCH_SIZE,
 )
 
-# Try importing dlib – give a helpful message if missing
-try:
-    import dlib
-except ImportError:
-    print("[ERROR] dlib is not installed. Install it with:")
-    print("        pip install dlib")
-    sys.exit(1)
+# Output directory default
+DEFAULT_RAW_EYES_DIR = os.path.join(DATASET_DIR, "raw_eyes")
 
-# Output directory for raw eye patches
-RAW_EYES_DIR = os.path.join(DATASET_DIR, "raw_eyes")
+# Try importing MediaPipe – give a helpful message if missing
+try:
+    import mediapipe as mp
+except ImportError:
+    print("[ERROR] mediapipe is not installed. Install it with:")
+    print("        pip install mediapipe")
+    sys.exit(1)
 
 # Padding factor around the eye bounding box (fraction of box size)
 EYE_PADDING = 0.35
+
+# MediaPipe landmark indices for EAR
+LEFT_EYE_EAR_IDX = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE_EAR_IDX = [362, 385, 387, 263, 373, 380]
+
+# MediaPipe landmark indices for eye crop bounding box
+LEFT_EYE_CROP_IDX = [33, 133, 160, 158, 159, 144, 153, 145, 246, 161, 163, 7, 173, 157, 154, 155]
+RIGHT_EYE_CROP_IDX = [362, 263, 385, 387, 386, 373, 380, 374, 466, 388, 390, 249, 398, 384, 381, 382]
 
 
 # ===================================================================
@@ -62,14 +67,7 @@ EYE_PADDING = 0.35
 def compute_ear(eye_points):
     """
     Compute the Eye Aspect Ratio (EAR) given 6 (x, y) landmark points.
-
     EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
-
-    Args:
-        eye_points: numpy array of shape (6, 2)
-
-    Returns:
-        float: EAR value
     """
     # Vertical distances
     v1 = np.linalg.norm(eye_points[1] - eye_points[5])
@@ -82,37 +80,19 @@ def compute_ear(eye_points):
     return (v1 + v2) / (2.0 * h)
 
 
-def align_and_crop_eye(frame_gray, eye_points, patch_size, padding=EYE_PADDING):
+def align_and_crop_eye(frame_gray, crop_pts, corner_left, corner_right, patch_size, padding=EYE_PADDING):
     """
-    Align the eye horizontally based on corner landmarks, then crop and resize.
-
-    The eye is rotated so that the line connecting the left corner (p1, index 0)
-    and the right corner (p4, index 3) is perfectly horizontal. This ensures
-    consistent orientation for both open and closed eyes.
-
-    Args:
-        frame_gray: Grayscale frame (H, W)
-        eye_points: numpy array of shape (6, 2) – 6 eye landmark points
-        patch_size: tuple (width, height) for resized output
-        padding: fractional padding around bounding box
-
-    Returns:
-        Resized aligned eye patch (grayscale, uint8) or None if crop is invalid.
+    Align the eye horizontally based on corners, crop and resize.
     """
     h, w = frame_gray.shape[:2]
 
     # --- Step 1: Compute rotation angle from eye corners ---
-    # p1 = left corner (index 0), p4 = right corner (index 3)
-    p1 = eye_points[0].astype(np.float64)
-    p4 = eye_points[3].astype(np.float64)
-
-    # Angle in degrees between the eye corners and horizontal
-    dx = p4[0] - p1[0]
-    dy = p4[1] - p1[1]
+    dx = corner_right[0] - corner_left[0]
+    dy = corner_right[1] - corner_left[1]
     angle = math.degrees(math.atan2(dy, dx))
 
     # --- Step 2: Compute center of the eye ---
-    eye_center = eye_points.mean(axis=0).astype(np.float64)
+    eye_center = crop_pts.mean(axis=0)
     cx, cy = eye_center[0], eye_center[1]
 
     # --- Step 3: Rotate the entire frame around the eye center ---
@@ -121,10 +101,10 @@ def align_and_crop_eye(frame_gray, eye_points, patch_size, padding=EYE_PADDING):
                               flags=cv2.INTER_LINEAR,
                               borderMode=cv2.BORDER_REPLICATE)
 
-    # --- Step 4: Transform eye points to rotated coordinates ---
-    ones = np.ones((6, 1))
-    pts_hom = np.hstack([eye_points.astype(np.float64), ones])  # (6, 3)
-    rotated_pts = (M @ pts_hom.T).T  # (6, 2)
+    # --- Step 4: Transform crop points to rotated coordinates ---
+    ones = np.ones((len(crop_pts), 1))
+    pts_hom = np.hstack([crop_pts, ones])  # (N, 3)
+    rotated_pts = (M @ pts_hom.T).T  # (N, 2)
 
     # --- Step 5: Crop with padding from rotated frame ---
     x_min, y_min = rotated_pts.min(axis=0)
@@ -153,7 +133,7 @@ def align_and_crop_eye(frame_gray, eye_points, patch_size, padding=EYE_PADDING):
 
 
 def print_progress_bar(current, total, bar_len=40, prefix="Progress"):
-    """Print a simple text-based progress bar (no tqdm needed)."""
+    """Print a simple text-based progress bar."""
     fraction = current / max(total, 1)
     filled = int(bar_len * fraction)
     bar = "█" * filled + "░" * (bar_len - filled)
@@ -165,32 +145,17 @@ def print_progress_bar(current, total, bar_len=40, prefix="Progress"):
 # Preview visualization
 # ===================================================================
 
-def build_preview(frame, landmarks, eye_pts_left, eye_pts_right,
+def build_preview(frame, pts, eye_pts_left, eye_pts_right,
                   patch_left, patch_right, ear_left, ear_right, frame_idx):
     """
-    Build a debug/preview frame showing:
-    - Original frame with landmarks drawn
-    - Zoomed left/right eye patches (enlarged from 24x24 to 120x120)
-    - EAR values
-
-    Args:
-        frame: original BGR frame
-        landmarks: dlib full_object_detection
-        eye_pts_left, eye_pts_right: numpy arrays of eye landmarks
-        patch_left, patch_right: 24x24 grayscale eye patches (or None)
-        ear_left, ear_right: EAR values
-        frame_idx: current frame number
-
-    Returns:
-        BGR image for display
+    Build a debug/preview frame showing dense mesh landmarks and crop previews.
     """
     display = frame.copy()
     h_frame, w_frame = display.shape[:2]
 
-    # Draw all 68 landmarks as small dots
-    for i in range(68):
-        p = landmarks.part(i)
-        cv2.circle(display, (p.x, p.y), 1, (128, 128, 128), -1)
+    # Draw all landmarks as small gray dots
+    for pt in pts:
+        cv2.circle(display, (int(pt[0]), int(pt[1])), 1, (128, 128, 128), -1)
 
     # Draw eye landmarks with polylines (green = open, red = closed threshold)
     for eye_pts, ear, label in [(eye_pts_left, ear_left, "L"),
@@ -198,16 +163,19 @@ def build_preview(frame, landmarks, eye_pts_left, eye_pts_right,
         # Color based on EAR
         color = (0, 255, 0) if ear >= 0.21 else (0, 0, 255)
 
+        # Convert to int format for cv2 drawings
+        eye_pts_int = np.array(eye_pts, dtype=np.int32)
+
         # Draw eye contour
-        cv2.polylines(display, [eye_pts], isClosed=True, color=color, thickness=2)
+        cv2.polylines(display, [eye_pts_int], isClosed=True, color=color, thickness=2)
 
         # Draw each landmark point
         for pt in eye_pts:
-            cv2.circle(display, tuple(pt), 3, (255, 255, 0), -1)
+            cv2.circle(display, (int(pt[0]), int(pt[1])), 3, (255, 255, 0), -1)
 
         # Draw corner-to-corner line (alignment reference)
-        p1 = tuple(eye_pts[0])
-        p4 = tuple(eye_pts[3])
+        p1 = (int(eye_pts[0][0]), int(eye_pts[0][1]))
+        p4 = (int(eye_pts[3][0]), int(eye_pts[3][1]))
         cv2.line(display, p1, p4, (255, 0, 255), 1)
 
         # Label with EAR
@@ -224,7 +192,6 @@ def build_preview(frame, landmarks, eye_pts_left, eye_pts_right,
     panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
     panel[:] = (30, 30, 30)  # Dark background
 
-    # Title
     cv2.putText(panel, "Eye Patches", (5, 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
@@ -261,12 +228,10 @@ def build_preview(frame, landmarks, eye_pts_left, eye_pts_right,
 
         y_offset += patch_display_size + 55
 
-    # Frame info
     cv2.putText(panel, f"Frame: {frame_idx}",
                 (10, panel_h - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
 
-    # Combine frame + panel side by side
     combined = np.hstack([display, panel])
     return combined
 
@@ -276,76 +241,80 @@ def build_preview(frame, landmarks, eye_pts_left, eye_pts_right,
 # ===================================================================
 
 def main():
-    """Load videos, extract eye patches, save results."""
-
     parser = argparse.ArgumentParser(
-        description="Extract aligned eye patches from recorded videos."
+        description="Extract aligned eye patches from recorded videos using MediaPipe Face Mesh."
+    )
+    parser.add_argument(
+        "--input", type=str, default=VIDEO_DIR,
+        help="Path to input video folder or file (default: from config.py)"
+    )
+    parser.add_argument(
+        "--output", type=str, default=DEFAULT_RAW_EYES_DIR,
+        help="Path to output folder for eye patches and metadata (default: dataset/raw_eyes)"
+    )
+    parser.add_argument(
+        "--detector", type=str, default="mediapipe",
+        help="Face and landmark detector to use (default: mediapipe)"
     )
     parser.add_argument(
         "--preview", action="store_true",
-        help="Show real-time preview with landmarks and eye patches. "
-             "Press Q to skip video, ESC to quit all."
+        help="Show real-time preview with landmarks and eye patches."
     )
     args = parser.parse_args()
 
-    os.makedirs(RAW_EYES_DIR, exist_ok=True)
+    # Create output directory
+    os.makedirs(args.output, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Discover input videos
     # ------------------------------------------------------------------
-    # NOTE: We use os.listdir instead of glob.glob because glob treats
-    # square brackets [] as character-class patterns, which breaks when
-    # the path contains e.g. [SUMMER_26].
-    # Support both .mp4 (new format) and .avi (legacy format).
     video_extensions = (".mp4", ".avi")
-    video_files = sorted([
-        os.path.join(VIDEO_DIR, f)
-        for f in os.listdir(VIDEO_DIR)
-        if f.lower().endswith(video_extensions)
-    ])
+    if os.path.isdir(args.input):
+        video_files = sorted([
+            os.path.join(args.input, f)
+            for f in os.listdir(args.input)
+            if f.lower().endswith(video_extensions)
+        ])
+    elif os.path.isfile(args.input) and args.input.lower().endswith(video_extensions):
+        video_files = [args.input]
+    else:
+        video_files = []
 
     if not video_files:
-        print(f"[ERROR] No video files (.mp4/.avi) found in {VIDEO_DIR}")
-        print("        Run collect_video.py first to record some videos.")
+        print(f"[ERROR] No video files found in '{args.input}'")
         sys.exit(1)
 
     print("=" * 60)
-    print("  EYE PATCH EXTRACTOR – Eye Blink Detection Dataset")
+    print("  EYE PATCH EXTRACTOR (MediaPipe Face Mesh)")
     print("=" * 60)
-    print(f"  Found {len(video_files)} video(s) in {VIDEO_DIR}")
-    print(f"  Output directory : {RAW_EYES_DIR}")
+    print(f"  Input path       : {args.input}")
+    print(f"  Found videos     : {len(video_files)}")
+    print(f"  Output directory : {args.output}")
     print(f"  Patch size       : {EYE_PATCH_SIZE}")
-    print(f"  Alignment        : ENABLED (rotate to horizontal)")
+    print(f"  Detector         : {args.detector}")
     if args.preview:
         print(f"  Preview mode     : ON (press Q=skip video, ESC=quit)")
-    print(f"  Landmark model   : {LANDMARK_MODEL_PATH}")
     print("=" * 60)
 
-    # ------------------------------------------------------------------
-    # Load dlib models
-    # ------------------------------------------------------------------
-    if not os.path.isfile(LANDMARK_MODEL_PATH):
-        print(f"\n[ERROR] Landmark model not found at:\n  {LANDMARK_MODEL_PATH}")
-        print("  Download it from:")
-        print("  http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
-        sys.exit(1)
+    # Initialize MediaPipe Face Mesh
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5
+    )
 
-    face_detector = dlib.get_frontal_face_detector()
-    predictor = dlib.shape_predictor(LANDMARK_MODEL_PATH)
-
-    # ------------------------------------------------------------------
-    # Counters / bookkeeping
-    # ------------------------------------------------------------------
-    eye_index = 0           # global sequential index for saved patches
+    # Counters
     total_frames = 0
     total_extracted = 0
     skipped_frames = 0
     quit_all = False
 
-    # CSV log: (index, filename, ear, eye_side)
-    ear_records = []
+    # Metadata records list
+    metadata_records = []
 
-    # First pass: count total frames for progress bar
+    # Count total frames for progress bar
     print("\n[INFO] Counting total frames …")
     frame_counts = []
     for vf in video_files:
@@ -366,12 +335,17 @@ def main():
             break
 
         video_name = os.path.basename(video_path)
+        video_id = os.path.splitext(video_name)[0]
         print(f"\n[VIDEO {vid_idx + 1}/{len(video_files)}] {video_name}")
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print(f"  [WARNING] Cannot open {video_path} – skipping.")
             continue
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 15.0  # Fallback
 
         frame_idx = 0
         while True:
@@ -383,16 +357,45 @@ def main():
             frame_idx += 1
             processed_so_far += 1
 
+            timestamp_sec = (frame_idx - 1) / fps
+
             if not args.preview:
                 print_progress_bar(processed_so_far, grand_total)
 
-            # Convert to grayscale for detection and cropping
+            h_img, w_img = frame.shape[:2]
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Detect faces
-            faces = face_detector(gray, 0)
-            if len(faces) == 0:
+            # Process with MediaPipe
+            results = face_mesh.process(rgb)
+
+            face_detected = (results.multi_face_landmarks is not None and len(results.multi_face_landmarks) > 0)
+
+            if not face_detected:
                 skipped_frames += 1
+                
+                # Write skipped rows to metadata (both left and right eyes)
+                for side in ["left", "right"]:
+                    metadata_records.append({
+                        "video_id": video_id,
+                        "video_path": os.path.normpath(video_path).replace('\\', '/'),
+                        "frame_index": frame_idx,
+                        "timestamp_sec": round(timestamp_sec, 3),
+                        "eye_side": side,
+                        "image_path": "",
+                        "face_detected": False,
+                        "landmark_detected": False,
+                        "detector": args.detector,
+                        "ear_left": "",
+                        "ear_right": "",
+                        "ear_avg": "",
+                        "auto_label": "",
+                        "review_label": "",
+                        "final_label": "",
+                        "status": "skipped",
+                        "notes": "No face detected"
+                    })
+
                 if args.preview:
                     # Show frame without detections
                     cv2.putText(frame, "No face detected", (10, 30),
@@ -406,62 +409,108 @@ def main():
                         break
                 continue
 
-            # Use the first (largest / most confident) face
-            face = faces[0]
-            landmarks = predictor(gray, face)
+            # Face detected, extract landmarks
+            face_landmarks = results.multi_face_landmarks[0]
+            pts = np.array([(lm.x * w_img, lm.y * h_img) for lm in face_landmarks.landmark])
 
-            # Helper to get eye points as numpy array
-            def get_eye_points(indices):
-                pts = []
-                for i in indices:
-                    p = landmarks.part(i)
-                    pts.append((p.x, p.y))
-                return np.array(pts, dtype=np.int32)
+            # Get EAR points
+            left_ear_pts = pts[LEFT_EYE_EAR_IDX]
+            right_ear_pts = pts[RIGHT_EYE_EAR_IDX]
 
-            patches = {}  # Store patches for preview
-            ears = {}     # Store EARs for preview
+            ear_left = compute_ear(left_ear_pts)
+            ear_right = compute_ear(right_ear_pts)
+            ear_avg = (ear_left + ear_right) / 2.0
 
-            for side, indices in [("left", LEFT_EYE_INDICES),
-                                  ("right", RIGHT_EYE_INDICES)]:
-                eye_pts = get_eye_points(indices)
-                ear = compute_ear(eye_pts.astype(np.float64))
+            # Get Crop points
+            left_crop_pts = pts[LEFT_EYE_CROP_IDX]
+            right_crop_pts = pts[RIGHT_EYE_CROP_IDX]
 
-                # Use aligned crop instead of simple bounding box
-                patch = align_and_crop_eye(gray, eye_pts, EYE_PATCH_SIZE)
+            # Corners for alignment
+            # Left eye corners: 33 (left corner of left eye), 133 (right corner of left eye)
+            left_p1 = pts[33]
+            left_p4 = pts[133]
+            # Right eye corners: 362 (left corner of right eye), 263 (right corner of right eye)
+            right_p1 = pts[362]
+            right_p4 = pts[263]
+
+            patches = {}
+            ears = {"left": ear_left, "right": ear_right}
+
+            for side, crop_pts, p1, p4 in [("left", left_crop_pts, left_p1, left_p4),
+                                            ("right", right_crop_pts, right_p1, right_p4)]:
+                try:
+                    patch = align_and_crop_eye(gray, crop_pts, p1, p4, EYE_PATCH_SIZE)
+                except Exception as e:
+                    patch = None
+                    notes = f"Crop error: {str(e)}"
+                else:
+                    notes = ""
 
                 patches[side] = patch
-                ears[side] = ear
 
                 if patch is None:
+                    # Crop error or invalid
+                    metadata_records.append({
+                        "video_id": video_id,
+                        "video_path": os.path.normpath(video_path).replace('\\', '/'),
+                        "frame_index": frame_idx,
+                        "timestamp_sec": round(timestamp_sec, 3),
+                        "eye_side": side,
+                        "image_path": "",
+                        "face_detected": True,
+                        "landmark_detected": True,
+                        "detector": args.detector,
+                        "ear_left": round(ear_left, 4),
+                        "ear_right": round(ear_right, 4),
+                        "ear_avg": round(ear_avg, 4),
+                        "auto_label": "",
+                        "review_label": "",
+                        "final_label": "",
+                        "status": "error",
+                        "notes": notes or "Crop failed (invalid coordinates)"
+                    })
                     continue
 
-                eye_index += 1
+                # Save eye patch image
                 total_extracted += 1
-                filename = f"eye_{eye_index:06d}.png"
-                save_path = os.path.join(RAW_EYES_DIR, filename)
-                cv2.imwrite(save_path, patch)
+                img_filename = f"{video_id}_frame{frame_idx:05d}_{side}.png"
+                img_save_path = os.path.join(args.output, img_filename)
+                cv2.imwrite(img_save_path, patch)
 
-                ear_records.append({
-                    "index": eye_index,
-                    "filename": filename,
-                    "ear": round(ear, 4),
+                # Store relative image path
+                rel_img_path = os.path.normpath(os.path.join(args.output, img_filename)).replace('\\', '/')
+
+                metadata_records.append({
+                    "video_id": video_id,
+                    "video_path": os.path.normpath(video_path).replace('\\', '/'),
+                    "frame_index": frame_idx,
+                    "timestamp_sec": round(timestamp_sec, 3),
                     "eye_side": side,
-                    "source_video": video_name,
-                    "frame": frame_idx,
+                    "image_path": rel_img_path,
+                    "face_detected": True,
+                    "landmark_detected": True,
+                    "detector": args.detector,
+                    "ear_left": round(ear_left, 4),
+                    "ear_right": round(ear_right, 4),
+                    "ear_avg": round(ear_avg, 4),
+                    "auto_label": "",
+                    "review_label": "",
+                    "final_label": "",
+                    "status": "success",
+                    "notes": ""
                 })
 
             # --- Preview mode ---
             if args.preview:
                 preview = build_preview(
-                    frame, landmarks,
-                    get_eye_points(LEFT_EYE_INDICES),
-                    get_eye_points(RIGHT_EYE_INDICES),
+                    frame, pts,
+                    left_ear_pts, right_ear_pts,
                     patches.get("left"), patches.get("right"),
-                    ears.get("left", 0.0), ears.get("right", 0.0),
+                    ear_left, ear_right,
                     frame_idx,
                 )
                 cv2.imshow("Extract Eyes - Preview", preview)
-                key = cv2.waitKey(30) & 0xFF  # ~33ms per frame for 30fps playback
+                key = cv2.waitKey(30) & 0xFF
                 if key == 27:  # ESC = quit all
                     quit_all = True
                     break
@@ -474,29 +523,51 @@ def main():
         cv2.destroyAllWindows()
 
     # ------------------------------------------------------------------
-    # Save EAR CSV
+    # Save Metadata CSV
     # ------------------------------------------------------------------
-    ear_csv_path = os.path.join(RAW_EYES_DIR, "ear_values.csv")
-    with open(ear_csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=["index", "filename", "ear", "eye_side",
-                           "source_video", "frame"]
-        )
-        writer.writeheader()
-        writer.writerows(ear_records)
+    csv_path = os.path.join(args.output, "metadata.csv")
+    fieldnames = [
+        "video_id", "video_path", "frame_index", "timestamp_sec",
+        "eye_side", "image_path", "face_detected", "landmark_detected",
+        "detector", "ear_left", "ear_right", "ear_avg",
+        "auto_label", "review_label", "final_label", "status", "notes"
+    ]
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(metadata_records)
+
+    # Also save as ear_values.csv for backwards compatibility with unchanged tools (if any)
+    # The columns: index, filename, ear, eye_side, source_video, frame
+    ear_values_path = os.path.join(args.output, "ear_values.csv")
+    compat_records = []
+    compat_idx = 0
+    for row in metadata_records:
+        if row["status"] == "success" and row["image_path"]:
+            compat_idx += 1
+            compat_records.append({
+                "index": compat_idx,
+                "filename": os.path.basename(row["image_path"]),
+                "ear": row["ear_left"] if row["eye_side"] == "left" else row["ear_right"],
+                "eye_side": row["eye_side"],
+                "source_video": os.path.basename(row["video_path"]),
+                "frame": row["frame_index"],
+            })
+    with open(ear_values_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["index", "filename", "ear", "eye_side", "source_video", "frame"])
+        writer.writeheader()
+        writer.writerows(compat_records)
+
     print("\n\n" + "=" * 60)
     print("  EXTRACTION COMPLETE")
     print("=" * 60)
     print(f"  Total frames processed : {total_frames}")
     print(f"  Skipped frames (no face): {skipped_frames}")
     print(f"  Total eye patches saved : {total_extracted}")
-    print(f"  EAR log saved to        : {ear_csv_path}")
-    print(f"  Output directory        : {RAW_EYES_DIR}")
-    print(f"  Alignment               : ENABLED")
+    print(f"  Metadata CSV saved to   : {csv_path}")
+    print(f"  Legacy CSV saved to     : {ear_values_path}")
+    print(f"  Output directory        : {args.output}")
     print("=" * 60)
 
 

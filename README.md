@@ -1,231 +1,87 @@
-# 👁️ Eye Blink Detection System – Health Monitor
+# 👁️ Eye Blink Data Collection Pipeline
 
-> Hệ thống nhận diện số lần nháy mắt khi sử dụng laptop/máy tính để cảnh báo sức khỏe người dùng.  
-> **Môn học**: DAP391m – Computer Vision (Machine Learning only, no Deep Learning)  
-> **Nhóm**: 6 thành viên
+> Hệ thống thu thập, trích xuất và gán nhãn dữ liệu mắt (Mở/Nhắm) phục vụ cho bài toán nhận diện nháy mắt (Blink Detection).
+> **Dự án**: Cảnh báo sức khỏe người dùng qua tần suất nháy mắt.
+> **Trạng thái hiện tại**: Giai đoạn thu thập và tiền xử lý dữ liệu (Data Collection & Labeling).
 
 ---
 
 ## 📋 Mục Lục
 
-- [Tổng Quan](#tổng-quan)
-- [Pipeline](#pipeline)
-- [Cài Đặt](#cài-đặt)
-- [Hướng Dẫn Sử Dụng](#hướng-dẫn-sử-dụng)
-- [Cấu Trúc Dự Án](#cấu-trúc-dự-án)
-- [Thuật Toán & Phương Pháp](#thuật-toán--phương-pháp)
-- [Kết Quả](#kết-quả)
+- [Tổng Quan Dự Án](#tổng-quan-dự-án)
+- [Kiến Trúc & Tính Năng Chức Năng](#kiến-trúc--tính-năng)
+- [Cài Đặt Hệ Thống](#cài-đặt-hệ-thống)
+- [Hướng Dẫn Quy Trình Thực Hiện](#hướng-dẫn-quy-trình-thực-hiện)
+- [Cấu Trúc Thư Mục](#cấu-trúc-thư-mục)
 
 ---
 
-## Tổng Quan
+## Tổng Quan Dự Án
 
-Hệ thống sử dụng camera laptop để theo dõi tần suất nháy mắt của người dùng trong thời gian thực, từ đó đưa ra cảnh báo sức khỏe:
+Đây là nền tảng khởi đầu cho dự án **Cảnh báo sức khỏe người dùng**. Chức năng chính của phần này là thu thập và chuẩn bị một bộ dữ liệu (dataset) chất lượng cao về hình ảnh mắt của người dùng. 
 
-| Chỉ số | Bình thường 🟢 | Cảnh báo 🟡 | Nguy hiểm 🔴 |
-|--------|----------------|-------------|--------------|
-| Tần suất nháy | ≥ 15 lần/phút | 10–14 lần/phút | < 10 lần/phút |
-| Thời gian nhắm mắt | < 0.4 giây | 0.4–2 giây | > 2 giây (ngủ gật) |
-| Thời gian sử dụng | < 30 phút | 30–60 phút | > 60 phút liên tục |
+Hệ thống sử dụng **MediaPipe Face Mesh** để quét khuôn mặt qua webcam, tự động định vị và cắt chính xác khu vực mắt trái/phải thành các hình ảnh kích thước 24x24 pixel. Những hình ảnh này, kết hợp với nhãn (Nhắm/Mở) được gán thủ công hoặc tự động qua các công cụ tích hợp, sẽ đóng vai trò cốt lõi trong việc huấn luyện các mô hình Machine Learning sau này (như SVM, Random Forest).
 
 ---
 
-## Pipeline
+## Kiến Trúc & Tính Năng
 
-```
-Camera (ngầm) → Face Detection (dlib HOG+SVM) → Facial Landmarks (68-point)
-→ Eye Extraction → Feature Extraction (EAR + HOG + LBP) → SVM Classifier
-→ Blink Counting (State Machine) → Health Monitor → Mini Dashboard (tkinter)
-```
-
-**Tất cả các phương pháp đều là Machine Learning truyền thống:**
-- Face Detection: HOG features + Linear SVM
-- Landmark Detection: Ensemble of Regression Trees
-- Classifier: SVM (RBF kernel) / Random Forest
+**1. Ghi hình Webcam (Video Collection):** Thu thập các luồng video thực tế của người dùng với nhiều điều kiện ánh sáng và góc độ khác nhau.
+**2. Trích xuất tự động (Eye Extraction):** Bỏ qua các phương pháp truyền thống chậm chạp, hệ thống sử dụng sức mạnh của MediaPipe để tracking khuôn mặt với độ trễ cực thấp.
+**3. Công cụ Gán nhãn (Labeling Tool):** Bộ công cụ console tiện dụng cho phép người dùng gán nhãn hàng loạt tự động bằng công thức EAR, duyệt lại (review) bằng phím tắt một cách trực quan, và tự động chia tách dữ liệu vào các thư mục Train/Test.
 
 ---
 
-## Cài Đặt
+## Cài Đặt Hệ Thống
 
-### 1. Yêu cầu hệ thống
-- **Python 3.10** (bắt buộc – dlib chỉ tương thích tốt với Python 3.10)
-- Webcam (camera laptop)
-- Windows / macOS / Linux
+### 1. Yêu cầu môi trường
+- **Python 3.8+** (Khuyên dùng Python 3.10)
+- Webcam (camera laptop hoặc webcam rời)
+- Hệ điều hành: Windows / macOS / Linux
 
-### 2. Tạo virtual environment
+### 2. Thiết lập dự án
 
 ```bash
-# Tạo venv bằng Python 3.10
-python3.10 -m venv venv
+# Khởi tạo virtual environment
+python -m venv venv
 
-# Activate venv
-# Windows:
+# Kích hoạt venv (trên Windows)
 venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
-```
 
-### 3. Cài đặt dependencies
-
-```bash
+# Cài đặt các thư viện phụ thuộc
 pip install -r requirements.txt
 ```
-
-> **Lưu ý**: Nếu gặp lỗi khi cài `dlib`, cần cài CMake trước:
-> ```bash
-> pip install cmake
-> pip install dlib
-> ```
-
-### 3. Tải model landmark
-
-Tải file `shape_predictor_68_face_landmarks.dat`:
-
-```bash
-# Tải từ dlib
-# Link: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
-# Giải nén và đặt vào thư mục models/
-```
+> **Lưu ý**: Nhờ sử dụng thư viện hiện đại MediaPipe, việc cài đặt diễn ra cực kỳ nhanh chóng mà không cần các thao tác build phức tạp từ CMake như trước.
 
 ---
 
-## Hướng Dẫn Sử Dụng
+## Hướng Dẫn Quy Trình Thực Hiện
 
-### Bước 1: Thu thập dataset
+Để giữ cho tài liệu README tổng quan và dễ đọc, toàn bộ **hướng dẫn chi tiết từng bước** về cách thu thập video, cách trích xuất, và các phím tắt dùng để gán nhãn dữ liệu đã được tách riêng vào thư mục `processing`.
 
-```bash
-# Quay video từ webcam (theo quy chuẩn nhóm: 12s, 15fps, .mp4)
-python data/collect_video.py
+👉 **Vui lòng xem chi tiết tại:** [Hướng Dẫn Quy Trình Xử Lý Dữ Liệu](src/data_collection/workflow_guide.md)
 
-# Trích xuất ảnh mắt từ video (có alignment xoay ngang)
-python data/extract_eyes.py              # Chạy bình thường
-python data/extract_eyes.py --preview    # Xem preview landmarks + eye patches
-
-# Gán nhãn bán tự động
-python data/label_tool.py --mode auto    # Gán nhãn tự động bằng EAR
-python data/label_tool.py --mode review  # Review và sửa nhãn thủ công
-python data/label_tool.py --mode split   # Chia train/test 80/20
-```
-
-### Bước 2: Train model
-
-```bash
-python src/train_model.py               # Train cả SVM và Random Forest
-python src/train_model.py --model svm   # Chỉ train SVM
-python src/train_model.py --model rf    # Chỉ train Random Forest
-```
-
-### Bước 3: Chạy hệ thống
-
-```bash
-python main.py                   # Chạy với mini dashboard
-python main.py --no-dashboard    # Chạy console only
-python main.py --debug           # Chạy với debug video window
-```
+*(Trong file này sẽ chứa toàn bộ các dòng lệnh cần thiết để chạy pipeline của bạn một cách trơn tru)*
 
 ---
 
-## Cấu Trúc Dự Án
+## Cấu Trúc Thư Mục
 
-```
+```text
 eye-blink-detection/
 ├── data/
-│   ├── collect_video.py          # Script quay video (12s, 15fps, .mp4)
-│   ├── extract_eyes.py           # Trích xuất + alignment mắt
-│   ├── label_tool.py             # Gán nhãn
-│   └── raw_videos/               # Video thô (tự tạo)
+│   └── raw_videos/               # Chứa video gốc (quay từ người dùng)
 ├── dataset/
-│   ├── raw_eyes/                 # Ảnh mắt trích xuất + ear_values.csv
-│   ├── train/open/               # Ảnh mắt mở (train 80%)
-│   ├── train/closed/             # Ảnh mắt nhắm (train 80%)
-│   ├── test/open/                # Ảnh mắt mở (test 20%)
-│   └── test/closed/              # Ảnh mắt nhắm (test 20%)
+│   ├── raw_eyes/                 # Ảnh mắt thô & metadata được tạo ra tự động
+│   ├── train/                    # Bộ dữ liệu 80% để huấn luyện
+│   └── test/                     # Bộ dữ liệu 20% để kiểm thử
 ├── src/
-│   ├── features.py               # EAR + HOG + LBP extraction
-│   ├── train_model.py            # Train & evaluate models
-│   ├── blink_detector.py         # Real-time blink detection
-│   ├── health_monitor.py         # Health monitoring logic
-│   └── dashboard.py              # tkinter mini dashboard
-├── models/
-│   ├── shape_predictor_68_face_landmarks.dat  # dlib model (tải riêng)
-│   ├── svm_blink_model.pkl       # Trained SVM (tự tạo)
-│   └── scaler.pkl                # Feature scaler (tự tạo)
-├── config.py                     # Cấu hình tập trung
-├── main.py                       # Entry point
-├── requirements.txt              # Dependencies
-├── .gitignore                    # Git ignore rules
-└── README.md                     # Tài liệu này
+│   └── data_collection/          # Nơi chứa mã nguồn chính của pipeline
+│       ├── collect_video.py      
+│       ├── extract_eyes.py       
+│       ├── label_tool.py         
+│       └── workflow_guide.md     # 📖 TÀI LIỆU HƯỚNG DẪN QUY TRÌNH CHI TIẾT
+├── config.py                     # File cấu hình (kích thước, EAR threshold,...)
+├── requirements.txt              # Danh sách thư viện cần thiết
+└── README.md                     # Tài liệu tổng quan dự án (File này)
 ```
-
----
-
-## Thuật Toán & Phương Pháp
-
-### Eye Aspect Ratio (EAR)
-
-```
-EAR = (||p2 - p6|| + ||p3 - p5||) / (2 × ||p1 - p4||)
-
-    p2  p3
-p1          p4
-    p6  p5
-```
-
-- Mắt mở: EAR ≈ 0.25 – 0.35
-- Mắt nhắm: EAR < 0.20
-
-### Feature Vector
-
-| Feature | Dimensions | Method |
-|---------|-----------|--------|
-| EAR | 3 | Eye Aspect Ratio (left, right, avg) |
-| HOG | ~100-200 | Histogram of Oriented Gradients |
-| LBP | ~10 | Local Binary Pattern histogram |
-| **Total** | **~115-215** | Concatenated vector |
-
-### Blink State Machine
-
-```
-OPEN → (EAR↓ + SVM=closed) → MAYBE_CLOSED
-MAYBE_CLOSED → (≥2 frames closed) → CLOSED
-CLOSED → (EAR↑ + SVM=open) → MAYBE_OPEN
-MAYBE_OPEN → (≥2 frames open) → OPEN (blink counted!)
-```
-
-### Classifier
-
-- **Primary**: SVM (RBF kernel) with GridSearchCV tuning
-- **Comparison**: Random Forest (200 trees)
-- **Evaluation**: Accuracy, Precision, Recall, F1-score, Confusion Matrix
-
----
-
-## Kết Quả
-
-> *Phần này sẽ được cập nhật sau khi train model.*
-
-| Model | Accuracy | Precision | Recall | F1 |
-|-------|----------|-----------|--------|-----|
-| SVM (RBF) | – | – | – | – |
-| Random Forest | – | – | – | – |
-
----
-
-## Thành Viên Nhóm
-
-| STT | Họ Tên | Vai Trò |
-|-----|--------|---------|
-| 1 | | Data Collection |
-| 2 | | Data Collection |
-| 3 | | ML Pipeline |
-| 4 | | ML Pipeline |
-| 5 | | Real-time System |
-| 6 | | Dashboard & Report |
-
----
-
-## Tài Liệu Tham Khảo
-
-1. Soukupová, T., & Čech, J. (2016). "Real-Time Eye Blink Detection using Facial Landmarks." *21st Computer Vision Winter Workshop*.
-2. Kazemi, V., & Sullivan, J. (2014). "One Millisecond Face Alignment with an Ensemble of Regression Trees." *CVPR 2014*.
-3. Dalal, N., & Triggs, B. (2005). "Histograms of Oriented Gradients for Human Detection." *CVPR 2005*.

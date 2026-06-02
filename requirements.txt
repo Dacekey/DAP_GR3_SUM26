@@ -1,20 +1,10 @@
-# Eye Blink Detection System - Dependencies
+# Eye Blink Detection System - Dependencies (Data Collection Only)
 # Install with: pip install -r requirements.txt
 
 # Computer Vision
 opencv-python>=4.8.0
-dlib
-
-# Machine Learning
-scikit-learn>=1.3.0
-scikit-image>=0.21.0
-joblib>=1.3.0
+mediapipe==0.10.14
 
 # Data Processing
 numpy>=1.24.0
 pandas>=2.0.0
-scipy>=1.10.0
-
-# Visualization
-matplotlib>=3.7.0
-seaborn>=0.12.0
