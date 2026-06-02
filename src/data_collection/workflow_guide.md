@@ -61,25 +61,42 @@ python src/data_collection/label_tool.py --mode split
 
 Khi làm việc nhóm, mỗi người tự thực hiện từ Bước 1 đến Bước 3 trên máy cá nhân. Sau đó, nhóm cần gom dữ liệu lại để có một Master Dataset.
 
-**4.1. Nộp dữ liệu (Upload):**
+**4.1. Nộp dữ liệu lên Google Drive (Upload):**
 1. Tạo một thư mục chung trên Google Drive (VD: `EyeBlink_Contributions`).
-2. Bên trong, tạo các thư mục mang tên từng thành viên (VD: `Hoa/`, `Nam/`).
-3. Mỗi thành viên **nén (zip)** thư mục `dataset/` của mình lại thành `dataset.zip` và tải lên thư mục tên mình trên Drive.
+2. Bên trong thư mục chung, tạo các thư mục con mang mã số hoặc tên của từng thành viên (VD: `M01/`, `M02/`...).
+3. Mỗi thành viên chạy quy trình (quay video, trích xuất và gán nhãn) trên máy cá nhân của mình. Sau khi hoàn thành xong **Bước 3 (Split)**, mỗi người tự tải lên (hoặc nén zip rồi tải lên) hai thư mục dữ liệu cục bộ vào thư mục của mình trên Drive:
+   - Thư mục `data/raw_videos/` (Video gốc của bạn)
+   - Thư mục `dataset/` (Ảnh mắt đã cắt và nhãn hoàn chỉnh của bạn)
+
+**Cấu trúc thư mục trên Google Drive chung của nhóm:**
+```text
+Google Drive/
+├── M01/ (Thành viên 1)
+│   ├── data/
+│   │   └── raw_videos/           # Video thô của M01
+│   └── dataset/                  # Ảnh mắt đã cắt và file metadata.csv của M01
+├── M02/ (Thành viên 2)
+│   ├── data/
+│   │   └── raw_videos/
+│   └── dataset/
+└── ... (M03, M04, M05, M06)
+```
 
 **4.2. Gộp dữ liệu tự động (Merge):**
-Người phụ trách tổng hợp dữ liệu sẽ tải tất cả các file `dataset.zip` về máy, giải nén và đặt vào thư mục `data/contributions/` trong dự án theo cấu trúc:
+Người phụ trách tổng hợp dữ liệu (Leader/ML Team) sẽ tải toàn bộ các thư mục đóng góp của các thành viên từ Google Drive về máy cá nhân của mình, giải nén và đặt vào thư mục `data/contributions/` trong dự án theo cấu trúc:
 ```text
 data/contributions/
-├── Hoa/
-│   └── dataset/  <-- Folder dataset của Hoa sau khi giải nén
-├── Nam/
-│   └── dataset/  <-- Folder dataset của Nam sau khi giải nén
+├── M01/
+│   └── dataset/  <-- Thư mục dataset của M01 (phải chứa metadata.csv)
+├── M02/
+│   └── dataset/  <-- Thư mục dataset của M02 (phải chứa metadata.csv)
+└── ...
 ```
-Sau đó, chạy công cụ gộp dữ liệu:
+Sau đó, chạy công cụ gộp dữ liệu tại thư mục gốc của dự án:
 ```bash
 python src/data_collection/merge_datasets.py
 ```
 - **Kết quả**: 
-  - Tạo ra một thư mục `dataset_master/` chứa toàn bộ ảnh của cả nhóm đã được trộn chung vào các thư mục `train` và `test`.
-  - Tạo ra một file `metadata_master.csv` tổng hợp tất cả các dòng dữ liệu của cả nhóm, đồng thời thêm cột `contributor` để biết ảnh nào do ai đóng góp.
-  - Bạn có thể lấy thư mục `dataset_master/` này để tiến hành train model mà không sợ bị xung đột file!
+  - Tạo ra một thư mục `dataset_master/` chứa toàn bộ ảnh của cả nhóm đã được gom chung và phân bổ vào các thư mục con `train` và `test` phù hợp.
+  - Tạo ra một file `metadata_master.csv` tổng hợp tất cả dòng dữ liệu của cả nhóm, đồng thời tự động thêm cột `contributor` để theo dõi nguồn gốc dữ liệu của từng thành viên.
+  - Thư mục `dataset_master/` này sẽ được dùng để thực hiện huấn luyện các mô hình Machine Learning sau này mà không lo bị trùng lặp hay ghi đè file!
