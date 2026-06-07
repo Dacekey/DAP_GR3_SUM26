@@ -32,7 +32,7 @@ desktop.ini
 # --- Data & Dataset (too large for git) ---
 data/
 dataset/
-
+dataset_master/
 # --- Trained Models (large binary files) ---
 models/*.pkl
 models/*.dat

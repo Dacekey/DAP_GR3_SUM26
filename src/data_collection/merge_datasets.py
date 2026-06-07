@@ -71,8 +71,11 @@ def main():
 
     for csv_file in csv_files:
         dataset_root = os.path.dirname(csv_file)
-        member_name = os.path.basename(os.path.dirname(dataset_root))
-        if member_name == "":
+        
+        # Extract the member folder name directly under input_dir
+        rel_path = os.path.relpath(csv_file, input_dir)
+        member_name = rel_path.split(os.sep)[0]
+        if member_name == "" or member_name == ".":
             member_name = "Unknown"
 
         print(f"Processing contribution from: {member_name} ({dataset_root})")
@@ -97,7 +100,14 @@ def main():
                     
                     # original image path might be 'dataset/raw_eyes/...', we just need the basename
                     img_basename = os.path.basename(row["image_path"])
-                    src_raw_img = os.path.join(dataset_root, "raw_eyes", img_basename)
+                    
+                    # If dataset_root already ends with raw_eyes, the image is directly in dataset_root
+                    if os.path.basename(dataset_root) == "raw_eyes":
+                        src_raw_img = os.path.join(dataset_root, img_basename)
+                        dataset_parent = os.path.dirname(dataset_root)
+                    else:
+                        src_raw_img = os.path.join(dataset_root, "raw_eyes", img_basename)
+                        dataset_parent = dataset_root
                     
                     # Copy to master raw_eyes
                     dst_raw_img = os.path.join(output_dir, "raw_eyes", img_basename)
@@ -106,18 +116,18 @@ def main():
                         if not os.path.exists(dst_raw_img): # Avoid copying same file twice if somehow duplicated
                             shutil.copy2(src_raw_img, dst_raw_img)
                             total_images_copied += 1
-                        row["image_path"] = os.path.join(output_dir, "raw_eyes", img_basename).replace('\\', '/')
+                        row["image_path"] = os.path.normpath(os.path.join(output_dir, "raw_eyes", img_basename)).replace('\\', '/')
                     
                     # Copy train/test splits if they exist
                     final_label = row.get("final_label", "")
                     if final_label in ["open", "closed"]:
                         # Check train
-                        src_train = os.path.join(dataset_root, "train", final_label, img_basename)
+                        src_train = os.path.join(dataset_parent, "train", final_label, img_basename)
                         if os.path.exists(src_train):
                             shutil.copy2(src_train, os.path.join(output_dir, "train", final_label, img_basename))
                         
                         # Check test
-                        src_test = os.path.join(dataset_root, "test", final_label, img_basename)
+                        src_test = os.path.join(dataset_parent, "test", final_label, img_basename)
                         if os.path.exists(src_test):
                             shutil.copy2(src_test, os.path.join(output_dir, "test", final_label, img_basename))
 
